@@ -1,3 +1,6 @@
 data/*.json
 .venv/
 uv.lock
+.presentation-build/
+artifacts/hie-context-development.pptx
+artifacts/hie-context-development-v2.pptx

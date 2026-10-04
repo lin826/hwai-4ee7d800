@@ -15,7 +15,13 @@ ai-eng = [
     "anthropic>=1.8.0",
 ]
 dev = [
+    { include-group = "serve" },
+    "httpx>=0.28.1",
     "pytest>=8",
+]
+serve = [
+    "fastapi>=0.142.2",
+    "uvicorn>=0.54.0",
 ]
 
 [build-system]

@@ -105,6 +105,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--workers", type=int)
     p.add_argument("--batch-mb", type=int, default=256)
 
+    p = sub.add_parser("serve", help="run the HTTP API over a store's snapshots")
+    p.add_argument("--store", type=Path, required=True)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--workers", type=int, default=1)
+
     p = sub.add_parser(
         "sql", help="run SQL over a store (views: manifest, events, notes, resources)"
     )
@@ -153,6 +159,19 @@ def main(argv: list[str] | None = None) -> None:
             )
         print(
             f"{len(counts)} catalogs, max {max(counts)}, limit {MAX_TOKENS}, method {counter.method}"
+        )
+        return
+    if args.command == "serve":
+        import os
+
+        import uvicorn
+
+        os.environ["SNAPSHOT_DIR"] = str(args.store / "snapshots")
+        uvicorn.run(
+            "health_context.api:app",
+            host=args.host,
+            port=args.port,
+            workers=args.workers,
         )
         return
     if args.command == "sql":

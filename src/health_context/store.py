@@ -7,6 +7,7 @@ Layout (one file per table per ingest batch, rows grouped by patient)::
       events/batch-<id>.parquet     one row per concept event (a lab reading, a diagnosis, ...)
       notes/batch-<id>.parquet      one row per de-duplicated note section occurrence
       resources/batch-<id>.parquet  every resource id and type, for citation
+      snapshots/<id[:2]>/<id>.json.gz  prebuilt per-patient index for serving
 
 Bundles are independent, so ingest is a map over files: each worker turns a
 batch of bundles into rows with the same ``PatientIndex`` used in memory and
@@ -37,6 +38,7 @@ import pyarrow.parquet as pq
 
 from .index import Concept, Event, NoteChunk, PatientIndex
 from .pipeline import load_bundle
+from .snapshot import SnapshotStore
 
 SCHEMA_VERSION = 1
 TABLES = ("manifest", "events", "notes", "resources")
@@ -176,12 +178,14 @@ def _ingest_batch(store: str, files: list[str]) -> dict[str, Any]:
     batch_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     now = pa.scalar(time.time_ns() // 1000, pa.timestamp("us", tz="UTC"))
     columns: dict[str, list[dict]] = {t: [] for t in TABLES}
+    snapshots: list[tuple[PatientIndex, dict[str, Any]]] = []
     nbytes = 0
     for f in files:
         path = Path(f)
         index = PatientIndex(load_bundle(path))
         for table, rows in index_rows(index, path, batch_id).items():
             columns[table].extend(rows)
+        snapshots.append((index, {"batch_id": batch_id, "source_path": str(path)}))
         nbytes += path.stat().st_size
     for row in columns["manifest"]:
         row["ingested_at"] = now.as_py()
@@ -198,6 +202,11 @@ def _ingest_batch(store: str, files: list[str]) -> dict[str, Any]:
             row_group_size=100_000,
         )
         os.replace(tmp, out)
+    # Serving snapshots follow the committed batch: one object per patient,
+    # overwritten by any later ingest of the same patient.
+    snapshot_store = SnapshotStore(Path(store) / "snapshots")
+    for index, meta in snapshots:
+        snapshot_store.put(index, meta)
     return {
         "batch_id": batch_id,
         "patients": len(files),
@@ -269,7 +278,7 @@ def _ingested_sources(store: Path) -> set[tuple[str, int, int]]:
 
 
 def _dir_bytes(path: Path) -> int:
-    return sum(p.stat().st_size for p in path.rglob("*.parquet"))
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
 
 # -- serve ------------------------------------------------------------------

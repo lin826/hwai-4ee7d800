@@ -6,6 +6,7 @@ import pytest
 
 from health_context.index import PatientIndex
 from health_context.pipeline import load_bundle
+from health_context.snapshot import SnapshotStore
 from health_context.store import Store, ingest
 from health_context.tools import catalog, run_tool
 
@@ -44,6 +45,11 @@ def test_store_round_trip_matches_in_memory_index(bundle, tmp_path):
     store = Store(tmp_path / "store")
     loaded = store.load_index(store.patient_for_source(bundle))
     assert _views(loaded) == _views(PatientIndex(load_bundle(bundle)))
+    snapshot, meta = SnapshotStore(tmp_path / "store" / "snapshots").get(
+        loaded.patient_id
+    )
+    assert _views(snapshot) == _views(loaded)
+    assert meta["source_path"] == str(bundle)
 
 
 def test_ingest_skips_unchanged_and_reingests_changed(bundle, tmp_path):

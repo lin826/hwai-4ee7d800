@@ -7,6 +7,9 @@ dependencies = [
     "pyarrow>=25.0.1",
 ]
 
+[project.scripts]
+health-context = "health_context.cli:main"
+
 [dependency-groups]
 ai-eng = [
     "anthropic>=1.8.0",

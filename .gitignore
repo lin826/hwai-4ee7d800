@@ -2,3 +2,4 @@ data/*.json
 .venv/
 uv.lock
 store/
+.env

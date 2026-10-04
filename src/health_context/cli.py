@@ -94,6 +94,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--json", type=Path, help="write answers, tool traces and grades")
     _llm_args(p)
 
+    p = sub.add_parser(
+        "count", help="count catalogs with Anthropic count_tokens (claude-opus-5)"
+    )
+    p.add_argument("paths", type=Path, nargs="*", default=[Path("data")])
+
     p = sub.add_parser("ingest", help="index bundles into a Parquet store")
     p.add_argument("paths", type=Path, nargs="+", help="bundle files or directories")
     p.add_argument("--store", type=Path, required=True)
@@ -129,6 +134,21 @@ def main(argv: list[str] | None = None) -> None:
 
         report = ingest(_expand(args.paths), args.store, args.workers, args.batch_mb)
         print(json.dumps(report, indent=2))
+        return
+    if args.command == "count":
+        from .counting import MAX_TOKENS, AnthropicCounter
+
+        counter = AnthropicCounter()
+        counts = []
+        for path in _expand(args.paths):
+            tokens = counter(catalog(PatientIndex(load_bundle(path))))
+            counts.append(tokens)
+            print(
+                f"{tokens:>8}  {'ok' if tokens <= MAX_TOKENS else 'OVER'}  {path.name}"
+            )
+        print(
+            f"{len(counts)} catalogs, max {max(counts)}, limit {MAX_TOKENS}, method {counter.method}"
+        )
         return
     if args.command == "sql":
         from .store import Store

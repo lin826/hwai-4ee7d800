@@ -136,12 +136,17 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(report, indent=2))
         return
     if args.command == "count":
+        from anthropic import APIError
+
         from .counting import MAX_TOKENS, AnthropicCounter
 
         counter = AnthropicCounter()
         counts = []
         for path in _expand(args.paths):
-            tokens = counter(catalog(PatientIndex(load_bundle(path))))
+            try:
+                tokens = counter(catalog(PatientIndex(load_bundle(path))))
+            except APIError as error:
+                raise SystemExit(f"Anthropic count_tokens failed: {error}") from None
             counts.append(tokens)
             print(
                 f"{tokens:>8}  {'ok' if tokens <= MAX_TOKENS else 'OVER'}  {path.name}"

@@ -7,7 +7,7 @@ import pytest
 from health_context.index import PatientIndex
 from health_context.pipeline import load_bundle
 from health_context.snapshot import SnapshotStore
-from health_context.store import Store, ingest
+from health_context.store import Store, ingest, snapshot_meta
 from health_context.tools import catalog, run_tool
 
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -75,3 +75,30 @@ def test_unknown_patient_raises(bundle, tmp_path):
     ingest([bundle], tmp_path / "store", workers=1)
     with pytest.raises(KeyError):
         Store(tmp_path / "store").load_index("no-such-patient")
+
+
+class FakeCounter:
+    method = "fake_counter"
+
+    def __call__(self, text):
+        return len(text)
+
+
+class BrokenCounter:
+    method = "broken_counter"
+
+    def __call__(self, text):
+        raise RuntimeError("credit balance is too low")
+
+
+def test_snapshot_meta_records_count_or_failure_never_an_estimate(bundle):
+    index = PatientIndex(load_bundle(bundle))
+    assert "catalog_tokens" not in snapshot_meta(index, "b1", bundle)
+
+    counted = snapshot_meta(index, "b1", bundle, FakeCounter())
+    assert counted["catalog_tokens"] == len(catalog(index))
+    assert counted["catalog_count_method"] == "fake_counter"
+
+    failed = snapshot_meta(index, "b1", bundle, BrokenCounter())
+    assert failed["catalog_tokens"] is None
+    assert "credit balance" in failed["catalog_count_error"]

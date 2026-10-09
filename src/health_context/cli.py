@@ -104,6 +104,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--store", type=Path, required=True)
     p.add_argument("--workers", type=int)
     p.add_argument("--batch-mb", type=int, default=256)
+    p.add_argument(
+        "--count-tokens",
+        action="store_true",
+        help="count each catalog with Anthropic count_tokens and store it in the snapshot",
+    )
 
     p = sub.add_parser("serve", help="run the HTTP API over a store's snapshots")
     p.add_argument("--store", type=Path, required=True)
@@ -138,7 +143,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "ingest":
         from .store import ingest
 
-        report = ingest(_expand(args.paths), args.store, args.workers, args.batch_mb)
+        report = ingest(
+            _expand(args.paths),
+            args.store,
+            args.workers,
+            args.batch_mb,
+            args.count_tokens,
+        )
         print(json.dumps(report, indent=2))
         return
     if args.command == "count":

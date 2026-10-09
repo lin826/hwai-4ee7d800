@@ -39,6 +39,7 @@ import pyarrow.parquet as pq
 from .index import Concept, Event, NoteChunk, PatientIndex
 from .pipeline import load_bundle
 from .snapshot import SnapshotStore
+from .tools import catalog
 
 SCHEMA_VERSION = 1
 TABLES = ("manifest", "events", "notes", "resources")
@@ -172,20 +173,45 @@ def index_rows(
     return rows
 
 
-def _ingest_batch(store: str, files: list[str]) -> dict[str, Any]:
+def snapshot_meta(
+    index: PatientIndex, batch_id: str, source: Path, counter: Any | None = None
+) -> dict[str, Any]:
+    """Snapshot metadata; with a counter, the catalog's authoritative token count.
+
+    A failed count is recorded as an error, never replaced by an estimate.
+    """
+    meta: dict[str, Any] = {"batch_id": batch_id, "source_path": str(source)}
+    if counter is not None:
+        meta["catalog_count_method"] = counter.method
+        try:
+            meta["catalog_tokens"] = counter(catalog(index))
+        except Exception as error:  # noqa: BLE001 - any API failure is recorded per patient
+            meta["catalog_tokens"] = None
+            meta["catalog_count_error"] = f"{type(error).__name__}: {error}"[:300]
+    return meta
+
+
+def _ingest_batch(
+    store: str, files: list[str], count_tokens: bool = False
+) -> dict[str, Any]:
     """Worker: index a batch of bundles and write one Parquet file per table."""
     started = time.perf_counter()
     batch_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     now = pa.scalar(time.time_ns() // 1000, pa.timestamp("us", tz="UTC"))
     columns: dict[str, list[dict]] = {t: [] for t in TABLES}
     snapshots: list[tuple[PatientIndex, dict[str, Any]]] = []
+    counter = None
+    if count_tokens:
+        from .counting import AnthropicCounter
+
+        counter = AnthropicCounter()
     nbytes = 0
     for f in files:
         path = Path(f)
         index = PatientIndex(load_bundle(path))
         for table, rows in index_rows(index, path, batch_id).items():
             columns[table].extend(rows)
-        snapshots.append((index, {"batch_id": batch_id, "source_path": str(path)}))
+        snapshots.append((index, snapshot_meta(index, batch_id, path, counter)))
         nbytes += path.stat().st_size
     for row in columns["manifest"]:
         row["ingested_at"] = now.as_py()
@@ -213,6 +239,11 @@ def _ingest_batch(store: str, files: list[str]) -> dict[str, Any]:
         "bytes": nbytes,
         "events": len(columns["events"]),
         "seconds": time.perf_counter() - started,
+        "counted": sum(m.get("catalog_tokens") is not None for _, m in snapshots),
+        "count_failures": sum("catalog_count_error" in m for _, m in snapshots),
+        "max_catalog_tokens": max(
+            (m.get("catalog_tokens") or 0 for _, m in snapshots), default=0
+        ),
     }
 
 
@@ -234,9 +265,18 @@ def ingest(
     store: Path,
     workers: int | None = None,
     batch_mb: int = 256,
+    count_tokens: bool = False,
 ) -> dict[str, Any]:
-    """Ingest bundles not yet in the store (same path, size and mtime are skipped)."""
+    """Ingest bundles not yet in the store (same path, size and mtime are skipped).
+
+    With ``count_tokens``, each catalog is counted with Anthropic ``count_tokens``
+    and the result is stored in its snapshot.
+    """
     started = time.perf_counter()
+    if count_tokens:
+        from .counting import AnthropicCounter
+
+        AnthropicCounter()  # fail fast on a missing key, before spawning workers
     files = sorted(files)
     seen = _ingested_sources(store)
     todo = [
@@ -245,7 +285,7 @@ def ingest(
     results = []
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(_ingest_batch, str(store), b)
+            pool.submit(_ingest_batch, str(store), b, count_tokens)
             for b in _batches(todo, batch_mb * 2**20)
         ]
         for future in as_completed(futures):
@@ -258,6 +298,11 @@ def ingest(
         "patients": sum(r["patients"] for r in results),
         "batches": len(results),
         "events": sum(r["events"] for r in results),
+        "catalogs_counted": sum(r["counted"] for r in results),
+        "count_failures": sum(r["count_failures"] for r in results),
+        "max_catalog_tokens": max(
+            (r["max_catalog_tokens"] for r in results), default=0
+        ),
         "input_mb": round(nbytes / 2**20, 1),
         "seconds": round(seconds, 2),
         "mb_per_second": round(nbytes / 2**20 / seconds, 1) if seconds else None,

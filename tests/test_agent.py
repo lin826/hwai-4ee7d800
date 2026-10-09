@@ -42,11 +42,16 @@ class ScriptedClient:
         self.requests.append(messages)
         if len(self.requests) == 1:
             return Reply(
-                "", [ToolCall("c1", "get_timeline", {"concept_id": "lab:4548-4"})]
+                "",
+                [ToolCall("c1", "get_timeline", {"concept_id": "lab:4548-4"})],
+                {"usage": {"prompt_tokens": 9000, "completion_tokens": 20}},
             )
         tool_output = messages[-1]["content"]
         assert f"Observation/{LATEST_HBA1C}" in tool_output
-        return Reply(f"6.31 % on 2025-09-29 (Observation/{LATEST_HBA1C})")
+        return Reply(
+            f"6.31 % on 2025-09-29 (Observation/{LATEST_HBA1C})",
+            raw={"usage": {"prompt_tokens": 9400, "completion_tokens": 35}},
+        )
 
 
 @pytest.mark.skipif(SAMPLE is None, reason="extract data/ first (see DATA.md)")
@@ -54,6 +59,15 @@ def test_agent_runs_tool_then_answers():
     client = ScriptedClient()
     result = answer(PatientIndex(load_bundle(SAMPLE)), "Latest HbA1c?", client)
     assert result.tool_calls == 1
+    assert result.usage == {
+        "llm_calls": 2,
+        "prompt_tokens": 18400,
+        "completion_tokens": 55,
+    }
     assert LATEST_HBA1C in result.text
     first_user = client.requests[0][1]["content"]
     assert "[lab:4548-4]" in first_user and "Question: Latest HbA1c?" in first_user
+
+
+def test_reply_usage_defaults_to_zero_when_server_omits_it():
+    assert Reply("x").usage == {"prompt_tokens": 0, "completion_tokens": 0}

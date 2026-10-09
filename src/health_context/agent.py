@@ -23,6 +23,16 @@ Keep the final answer short."""
 class Answer:
     text: str
     steps: list[dict] = field(default_factory=list)
+    # One entry per model call: the server-reported usage for that call.
+    llm_calls: list[dict] = field(default_factory=list)
+
+    @property
+    def usage(self) -> dict[str, int]:
+        return {
+            "llm_calls": len(self.llm_calls),
+            "prompt_tokens": sum(c["prompt_tokens"] for c in self.llm_calls),
+            "completion_tokens": sum(c["completion_tokens"] for c in self.llm_calls),
+        }
 
     @property
     def tool_calls(self) -> int:
@@ -38,10 +48,12 @@ def answer(
     ]
     tools = openai_tools(TOOL_SCHEMAS)
     steps: list[dict] = []
+    llm_calls: list[dict] = []
     for _ in range(max_steps):
         reply = client.chat(messages, tools)
+        llm_calls.append(reply.usage)
         if not reply.tool_calls:
-            return Answer(reply.content, steps)
+            return Answer(reply.content, steps, llm_calls)
         messages.append(
             {
                 "role": "assistant",
@@ -79,4 +91,6 @@ def answer(
     messages.append(
         {"role": "user", "content": "Answer now from the information above."}
     )
-    return Answer(client.chat(messages).content, steps)
+    final = client.chat(messages)
+    llm_calls.append(final.usage)
+    return Answer(final.content, steps, llm_calls)

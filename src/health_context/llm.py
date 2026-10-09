@@ -32,6 +32,15 @@ class Reply:
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def usage(self) -> dict[str, int]:
+        """Token usage reported by the server, in the served model's own tokenizer."""
+        usage = self.raw.get("usage") or {}
+        return {
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+        }
+
 
 class ChatClient:
     def __init__(

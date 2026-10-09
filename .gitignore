@@ -3,3 +3,4 @@ data/*.json
 uv.lock
 store/
 .env
+__pycache__/

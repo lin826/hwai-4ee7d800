@@ -123,8 +123,17 @@ def build_cases(paths: list[Path], per_category: int = 1) -> list[QACase]:
     return cases
 
 
+# Models often emit typographic hyphens and spaces (e.g. "2025\u201109\u201129",
+# "6.31\u202f%"); fold them to ASCII so formatting is not graded as content.
+_TYPOGRAPHIC = str.maketrans(
+    {c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2212"}
+    | {c: " " for c in "\u00a0\u2007\u202f"}
+)
+
+
 def grade(case: QACase, text: str) -> tuple[bool, bool]:
     """Return (answer_correct, cited_gold_resource)."""
+    text = text.translate(_TYPOGRAPHIC)
     lowered = text.lower()
     cited = bool(case.gold_resource_id) and case.gold_resource_id in text
     if case.expect_absent:

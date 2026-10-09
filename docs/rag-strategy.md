@@ -27,7 +27,7 @@ Tools   = search_records(query) / get_timeline(concept_id, since, until) / get_e
 ```
 
 1. **Group by concept, not by chunk.** Each item in the index is a clinical concept with its whole timeline. "Most recent", "first", "how many" and "trend" are read off one item deterministically.
-2. **The catalog is the always-on context.** It tells the model what exists, including an explicit "no AllergyIntolerance recorded (not confirmed absent)" line. Its size across the corpus is about 0.8k to 7.8k tokens by a bytes/4 estimate (median 3.8k). This is not an authoritative Anthropic count.
+2. **The catalog is the always-on context.** It tells the model what exists, including an explicit "no AllergyIntolerance recorded (not confirmed absent)" line. Counted with Anthropic `count_tokens` on `claude-opus-5` as one user message, every one of the 109 catalogs fits: 1,682 to 15,620 tokens (median 7,526), at most 1.7% of the 900,000 budget. The largest catalog belongs to a 13.4 MB bundle; the 49.9 MB bundle produces 13,749 tokens. A bytes/4 estimate undercounted these by a factor of 1.9 to 2.1, which is why only the endpoint count is reported as compliance.
 3. **Tools return detail with citations.** Every timeline row carries its `ResourceType/id`. Long flat series are collapsed into runs, for example `2019-02-20..2026-08-12 2.43 % x144`, so the largest timelines stay readable.
 4. **Lexical ranking, by choice.** BM25 over concept names, with a small lab alias table (`hba1c`, `bp`, `ldl`, ...), kind words ("diagnosed" favours conditions), a name-match bonus, and note sections weighted at 0.5 because they repeat structured data. Every rule is visible in `index.py` and can be explained line by line.
 5. **The model bridges vocabulary.** Lay terms that keyword search cannot match ("statin" vs "simvastatin", "high blood pressure" vs "hypertension") are the model's job: it reads the catalog and calls tools with the coded name. Embeddings are deferred until an end-to-end eval shows this fails.
@@ -59,7 +59,7 @@ What the eval drove: the first run scored medication recall@1 0.535 because note
 
 ## Next
 
-1. Agent loop: catalog in the prompt plus the three tools via Anthropic tool use, recording which tools and ids the model used. Requires `ANTHROPIC_API_KEY`.
-2. End-to-end eval on the same generated questions plus a lay-language set, graded on value, date and cited resource id, with absence questions that check the model does not invent answers.
-3. Count the catalog with `count_tokens` on `claude-opus-5` and compare catalog plus tools against the full compact context on the same eval.
+1. Run the end-to-end eval (`qa-eval`, built in `agent.py` and `qa_eval.py`) against a hosted LFM2.5-8B-A1B server: generated questions plus absence questions, graded on value, date and cited resource id. The Anthropic key is used for token counting only.
+2. Add a lay-language question set ("statin", "high blood pressure") to measure whether the model bridges vocabulary gaps from the catalog.
+3. Compare catalog plus tools against a larger compact context on the same eval, now that catalogs are counted with `count_tokens`.
 4. Replace the older fact-level `retrieval.py` once the agent loop uses the index.

@@ -53,6 +53,6 @@ These numbers exclude the LLM. With a model in the loop, each answer takes sever
 ## Limits and next steps
 
 - **Object storage.** `SnapshotStore` reads a filesystem path. An S3 or GCS backend needs the same `get`/`put`/`path` methods, using the object's ETag where the cache now uses the file's mtime.
-- **Token counts.** `catalog_tokens` stays empty until ingest counts catalogs with Anthropic `count_tokens`, which is blocked by the account's credit balance.
+- **Token counts.** `catalog_tokens` stays empty: the `count` command measures catalogs (all 109 fit, max 15,620 tokens), but ingest does not yet store the count in each snapshot.
 - **Concurrent re-ingest.** Two workers re-ingesting the same patient at once race on its snapshot, and the last writer wins. A queue keyed by patient id avoids this.
 - **Access control is not implemented.** Real records need authentication, per-patient authorization, and audit logging of every tool call and resource id served.

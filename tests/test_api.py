@@ -1,3 +1,5 @@
+import json
+import logging
 import os
 from pathlib import Path
 
@@ -25,9 +27,14 @@ class ScriptedLLM:
     def chat(self, messages, tools=None):
         if messages[-1]["role"] != "tool":
             return Reply(
-                "", [ToolCall("c1", "get_timeline", {"concept_id": "lab:4548-4"})]
+                "",
+                [ToolCall("c1", "get_timeline", {"concept_id": "lab:4548-4"})],
+                {"usage": {"prompt_tokens": 9000, "completion_tokens": 20}},
             )
-        return Reply(f"6.31 % on 2025-09-29 (Observation/{LATEST_HBA1C})")
+        return Reply(
+            f"6.31 % on 2025-09-29 (Observation/{LATEST_HBA1C})",
+            raw={"usage": {"prompt_tokens": 9400, "completion_tokens": 35}},
+        )
 
 
 class DownLLM:
@@ -40,7 +47,14 @@ class DownLLM:
 @pytest.fixture
 def setup(tmp_path):
     store = SnapshotStore(tmp_path)
-    store.put(PatientIndex(load_bundle(SAMPLE)), {"batch_id": "b1"})
+    store.put(
+        PatientIndex(load_bundle(SAMPLE)),
+        {
+            "batch_id": "b1",
+            "catalog_tokens": 7566,
+            "catalog_count_method": "anthropic_count_tokens:claude-opus-5",
+        },
+    )
     cache = api.IndexCache(store, size=2)
     api.app.dependency_overrides[api.get_cache] = lambda: cache
     api.app.dependency_overrides[api.get_llm] = ScriptedLLM
@@ -58,7 +72,8 @@ def test_catalog_search_and_timeline(setup):
     client, _, _ = setup
     catalog = client.get(f"/v1/patients/{PATIENT}/catalog").json()
     assert "[lab:4548-4]" in catalog["catalog"]
-    assert catalog["snapshot"] == {"batch_id": "b1"}
+    assert catalog["catalog_tokens"] == 7566
+    assert catalog["catalog_count_method"] == "anthropic_count_tokens:claude-opus-5"
 
     hits = client.post(
         f"/v1/patients/{PATIENT}/search", json={"query": "hba1c", "k": 3}
@@ -109,3 +124,30 @@ def test_cache_hits_and_reloads_changed_snapshot(setup):
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     client.get(f"/v1/patients/{PATIENT}/catalog")
     assert cache.misses == 2
+
+
+def test_ask_reports_usage_and_logs_one_json_line_without_text(setup, caplog):
+    client, _, _ = setup
+    logger = logging.getLogger("health_context.requests")
+    logger.addHandler(caplog.handler)
+    try:
+        question = "What was her most recent HbA1c?"
+        body = client.post(
+            f"/v1/patients/{PATIENT}/ask", json={"question": question}
+        ).json()
+    finally:
+        logger.removeHandler(caplog.handler)
+    assert body["usage"]["prompt_tokens"] == 18400
+    assert body["usage"]["completion_tokens"] == 55
+    assert body["usage"]["llm_calls"] == 2
+    assert body["catalog_tokens"] == 7566
+
+    lines = [r.getMessage() for r in caplog.records if r.name == logger.name]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["route"] == "/v1/patients/{patient_id}/ask"
+    assert record["patient_id"] == PATIENT
+    assert record["status"] == 200
+    assert (record["prompt_tokens"], record["completion_tokens"]) == (18400, 55)
+    assert record["catalog_tokens"] == 7566 and record["tool_calls"] == 1
+    assert question not in lines[0] and "6.31" not in lines[0]

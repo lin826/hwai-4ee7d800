@@ -10,13 +10,17 @@ Run: ``uv run --group serve uvicorn health_context.api:app --workers 4``
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import sys
 import threading
 import time
 from collections import OrderedDict
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .agent import answer
@@ -61,6 +65,37 @@ class IndexCache:
 
 
 app = FastAPI(title="health-context", version="1")
+
+# One JSON line per request. Question and answer text are never logged:
+# with real records they would be protected health information.
+request_log = logging.getLogger("health_context.requests")
+if not request_log.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    request_log.addHandler(_handler)
+    request_log.setLevel(logging.INFO)
+    request_log.propagate = False
+
+
+@app.middleware("http")
+async def log_request(request: Request, call_next):
+    started = time.perf_counter()
+    request.state.log = {}
+    response = await call_next(request)
+    route = request.scope.get("route")
+    record = {
+        "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
+        "method": request.method,
+        "route": getattr(route, "path", request.url.path),
+        "patient_id": (request.scope.get("path_params") or {}).get("patient_id"),
+        "status": response.status_code,
+        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+        **request.state.log,
+    }
+    request_log.info(json.dumps(record, separators=(",", ":")))
+    return response
+
+
 _cache: IndexCache | None = None
 
 
@@ -114,13 +149,22 @@ def readyz(cache: Cache) -> dict[str, Any]:
     }
 
 
+def _catalog_fields(meta: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative catalog size, if ingest counted it (Anthropic count_tokens)."""
+    return {
+        "catalog_tokens": meta.get("catalog_tokens"),
+        "catalog_count_method": meta.get("catalog_count_method"),
+    }
+
+
 @app.get("/v1/patients/{patient_id}/catalog")
-def get_catalog(patient_id: str, cache: Cache) -> dict[str, Any]:
+def get_catalog(patient_id: str, cache: Cache, request: Request) -> dict[str, Any]:
     index, meta = _patient(cache, patient_id)
+    request.state.log.update(_catalog_fields(meta))
     return {
         "patient_id": patient_id,
         "catalog": catalog(index),
-        "catalog_tokens": meta.get("catalog_tokens"),
+        **_catalog_fields(meta),
         "snapshot": meta,
     }
 
@@ -176,16 +220,24 @@ def ask(
     request: AskRequest,
     cache: Cache,
     llm: Annotated[ChatClient, Depends(get_llm)],
+    http: Request,
 ) -> dict[str, Any]:
-    index, _ = _patient(cache, patient_id)
+    index, meta = _patient(cache, patient_id)
+    http.state.log.update({**_catalog_fields(meta), "model": llm.model})
     started = time.perf_counter()
     try:
         result = answer(index, request.question, llm, request.max_steps)
     except (OSError, ValueError, KeyError) as error:
         raise HTTPException(502, f"LLM server error: {error}") from None
+    # Server-reported usage is in the served model's tokenizer: it measures
+    # this model's work, not the claude-opus-5 budget count above.
+    usage = {**result.usage, "tool_calls": len(result.steps)}
+    http.state.log.update(usage)
     return {
         "answer": result.text,
         "steps": result.steps,
         "model": llm.model,
         "seconds": round(time.perf_counter() - started, 2),
+        "usage": {**usage, "counted_by": "LLM server (served model's tokenizer)"},
+        **_catalog_fields(meta),
     }
